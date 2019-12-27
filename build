@@ -111,6 +111,8 @@ popd
 
 cp "edk2-${EDK2_VERSION}"/Build/UefiPayloadPkgX64/RELEASE_GCC5/FV/UEFIPAYLOAD.fd .
 
+unset WORKSPACE EDK_TOOLS_PATH CONF_PATH
+
 # Add things to the base Coreboot image
 ./cbfstool coreboot.rom add-payload -f grub.elf -n fallback/payload -c lzma
 ./cbfstool coreboot.rom add-payload -f bios.bin.elf -n img/seabios -c lzma
