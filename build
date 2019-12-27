@@ -105,7 +105,8 @@ make -j $(( $(nproc) + 1 )) -C BaseTools
 source edksetup.sh
 sed -e "s,DEFINE GCC5_IA32_PREFIX        = ENV(GCC5_BIN),DEFINE GCC5_IA32_PREFIX        = i386-elf-,g" -i Conf/tools_def.txt
 sed -e "s,DEFINE GCC5_X64_PREFIX         = ENV(GCC5_BIN),DEFINE GCC5_X64_PREFIX         = x86_64-elf-,g" -i Conf/tools_def.txt
-build -a IA32 -a X64 -p UefiPayloadPkg/UefiPayloadPkgIa32X64.dsc -n 0 -b RELEASE -t GCC5 -D BOOTLOADER=COREBOOT
+# PCIE_BASE is CONFIG_MMCONF_BASE_ADDRESS
+build -a IA32 -a X64 -p UefiPayloadPkg/UefiPayloadPkgIa32X64.dsc -n 0 -b RELEASE -t GCC5 -D BOOTLOADER=COREBOOT -D PCIE_BASE=0xf0000000
 popd
 
 cp "edk2-${EDK2_VERSION}"/Build/UefiPayloadPkgX64/RELEASE_GCC5/FV/UEFIPAYLOAD.fd .
