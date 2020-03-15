@@ -1,0 +1,180 @@
+#!/bin/bash
+
+set -e -o pipefail
+
+# Multi-payload Coreboot build
+# Junde Yhi <lmy441900@aosc.xyz>
+#
+# The script assumes Ubuntu 18.04 LTS on dependency installation. To skip the
+# package installation stage, set the environment variable SKIP_DEP_INST.
+
+# Locked versions (tags)
+COREBOOT_VERSION="4.11"
+LIBREBOOT_CHECKOUT="64444d29d28a8be7d988a2841636a91a953d8825"
+GRUB_VERSION="2.04"
+SEABIOS_VERSION="1.13.0"
+EDK2_VERSION="edk2-stable201911"
+INTEL_MICROCODE_CHECKOUT="microcode-20191115"
+
+# Work directories
+[ -z "${SRCDIR}" ] && SRCDIR="$(pwd)/source"
+[ -z "${BUILDDIR}" ] && BUILDDIR="$(pwd)/build"
+[ -z "${OUTDIR}" ] && OUTDIR="$(pwd)/out"
+[ -z "${CONFDIR}" ] && CONFDIR="$(pwd)/config"
+
+if [ ! -d "${CONFDIR}" ]; then
+  printf "** CONFDIR %s does not exist.\n" "${CONFDIR}"
+  exit 2
+fi
+
+[ ! -d "${SRCDIR}" ] && mkdir -p "${SRCDIR}"
+[ ! -d "${BUILDDIR}" ] && mkdir -p "${BUILDDIR}"
+[ ! -d "${OUTDIR}" ] && mkdir -p "${OUTDIR}"
+
+# Install dependencies
+if [ -z "${SKIP_DEP_INST}" ]; then
+  sudo apt install \
+    bison build-essential curl flex git gnat libncurses5-dev m4 zlib1g-dev \ # Coreboot
+    mtools dosfstools \ # ich9gen
+    gettext pkg-config libfreetype6-dev unifont python autoconf automake autopoint \ # GRUB2
+    liblzma-dev libzfslinux-dev \ # GRUB2 extras
+    uuid-dev python3-distutils # EDK-II
+fi
+
+# Download
+if [ -z "${SKIP_DOWNLOAD}" ]; then
+  pushd "${SRCDIR}"
+
+  wget "https://coreboot.org/releases/coreboot-${COREBOOT_VERSION}.tar.xz"
+  git clone "https://notabug.org/libreboot/libreboot.git"
+  wget "https://ftp.gnu.org/gnu/grub/grub-${GRUB_VERSION}.tar.xz"
+  wget "https://github.com/tianocore/edk2/archive/${EDK2_VERSION}.tar.gz"
+  git clone "https://github.com/coreboot/intel-microcode"
+
+  popd
+fi
+
+# Extract
+pushd "${BUILDDIR}"
+
+tar xf "${SRCDIR}/coreboot-${COREBOOT_VERSION}.tar.xz"
+
+git clone "${SRCDIR}/libreboot"
+pushd "libreboot"
+git checkout "${LIBREBOOT_CHECKOUT}"
+popd
+
+tar xf "${SRCDIR}/grub-${GRUB_VERSION}.tar.xz"
+tar xf "${SRCDIR}/${EDK2_VERSION}.tar.gz"
+
+git clone "${SRCDIR}/intel-microcode"
+pushd "intel-microcode"
+git checkout "${INTEL_MICROCODE_CHECKOUT}"
+popd
+
+popd
+
+# ich9gen
+pushd "${BUILDDIR}/libreboot"
+
+cp "${CONFDIR}/macaddress" ./projects/ich9gen/configs/macaddress
+./libreboot build ich9gen
+cp ./build/ich9fdgbe_8m.bin "${OUTDIR}"
+
+popd
+
+# Coreboot
+pushd "${BUILDDIR}/coreboot-${COREBOOT_VERSION}"
+
+# Coreboot - Toolchain
+XGCC_PATH="${OUTDIR}/xgcc-i386-x64"
+mkdir -p "${XGCC_PATH}"
+
+make crossgcc-i386 CPUS=$(( $(nproc) + 1 )) DEST="${XGCC_PATH}"
+make crossgcc-x64 CPUS=$(( $(nproc) + 1 )) DEST="${XGCC_PATH}"
+
+# tar c xgcc-i386-x64/ | xz -ze9v -T 0 > xgcc-i386-x64-${COREBOOT_VERSION}.tar.xz
+PATH="${XGCC_PATH}:${PATH}"
+
+# Coreboot - Base Image
+cp "${CONFDIR}/coreboot.config" .config
+cp -r "${BUILDDIR}/intel-microcode" ./3rdparty/
+
+sed -e "s,@IFD_PATH@,${IFD_PATH}/ich9fdgbe_8m.bin,g" -i .config
+make -j 1
+
+cp ./build/{coreboot.rom,cbfstool} "${OUTDIR}"
+
+popd
+
+# GRUB2
+pushd "${BUILDDIR}/grub-${GRUB_VERSION}"
+
+GRUB_PATH="${OUTDIR}/grub-i386-coreboot"
+mkdir -p "${GRUB_PATH}"
+mkdir -p build
+cd build
+
+../configure \
+  --prefix="${GRUB_PATH}" \
+  --with-platform=coreboot \
+  --enable-liblzma \
+  --enable-libzfs \
+  --disable-grub-mkfont \
+  --disable-grub-themes
+
+make -j $(( $(nproc) + 1 ))
+make install
+
+# tar c grub-i386-coreboot/ | xz -ze9v -T 0 > grub-i386-coreboot-${GRUB_VERSION}.tar.xz
+
+# Generate GRUB2 standalone image with the menu configuration
+"${GRUB_PATH}/grub-mkstandalone" \
+  --format=i386-coreboot \
+  --compress=xz \
+  --output="${OUTDIR}/grub.elf" \
+  /boot/grub/grub.cfg="${CONFDIR}/grub.cfg"
+
+popd
+
+# SeaBIOS
+pushd "${BUILDDIR}/seabios-${SEABIOS_VERSION}"
+
+cp "${CONFDIR}/seabios.config" .config
+make -j $(( $(nproc) + 1 )) CROSS_PREFIX="i386-elf-" EXTRAVERSION="-yhi"
+cp ./out/{bios.bin.elf,vgabios.bin} "${OUTDIR}"
+
+popd
+
+# TianoCore (EDK-II)
+pushd "${BUILDDIR}/edk2-${EDK2_VERSION}"
+
+make -j $(( $(nproc) + 1 )) -C BaseTools
+source edksetup.sh
+
+# Tell the TianoCore build system to use the Coreboot cross toolchain
+sed -e "s,DEFINE GCC5_IA32_PREFIX        = ENV(GCC5_BIN),DEFINE GCC5_IA32_PREFIX        = i386-elf-,g" -i Conf/tools_def.txt
+sed -e "s,DEFINE GCC5_X64_PREFIX         = ENV(GCC5_BIN),DEFINE GCC5_X64_PREFIX         = x86_64-elf-,g" -i Conf/tools_def.txt
+
+# PCIE_BASE is CONFIG_MMCONF_BASE_ADDRESS for Intel GM45
+# https://github.com/coreboot/coreboot/blob/master/src/northbridge/intel/gm45/Kconfig#L42-L44
+build -a IA32 -a X64 -p UefiPayloadPkg/UefiPayloadPkgIa32X64.dsc -n 0 -b RELEASE -t GCC5 -D BOOTLOADER=COREBOOT -D PCIE_BASE=0xf0000000
+
+# Unset TianoCore build system related environment variables
+unset WORKSPACE EDK_TOOLS_PATH CONF_PATH
+
+cp ./Build/UefiPayloadPkgX64/RELEASE_GCC5/FV/UEFIPAYLOAD.fd "${OUTDIR}"
+
+popd
+
+# Assemble the final image by adding things to the base Coreboot image
+pushd "${OUTDIR}"
+
+./cbfstool coreboot.rom add-payload -f grub.elf -n fallback/payload -c lzma
+./cbfstool coreboot.rom add-payload -f bios.bin.elf -n img/seabios -c lzma
+./cbfstool coreboot.rom add-payload -f UEFIPAYLOAD.fd -n img/tianocore -c lzma
+
+# Placing the VGA BIOS as an option rom ensures its execution over time
+./cbfstool coreboot.rom add -t optionrom -f vgabios.bin -n "pci8086,2a42" -c lzma
+
+popd
