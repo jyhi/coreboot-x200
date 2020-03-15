@@ -158,6 +158,7 @@ sed -e "s,DEFINE GCC5_X64_PREFIX         = ENV(GCC5_BIN),DEFINE GCC5_X64_PREFIX 
 
 # PCIE_BASE is CONFIG_MMCONF_BASE_ADDRESS for Intel GM45
 # https://github.com/coreboot/coreboot/blob/master/src/northbridge/intel/gm45/Kconfig#L42-L44
+# https://github.com/coreboot/coreboot/blob/master/payloads/external/tianocore/Makefile#L27
 build -a IA32 -a X64 -p UefiPayloadPkg/UefiPayloadPkgIa32X64.dsc -n 0 -b RELEASE -t GCC5 -D BOOTLOADER=COREBOOT -D PCIE_BASE=0xf0000000
 
 # Unset TianoCore build system related environment variables
